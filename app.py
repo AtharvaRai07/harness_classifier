@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from classifier import classify_case
+from llm_classifier import classify_batch_async
 
 app = FastAPI()
 
@@ -41,26 +41,20 @@ async def classify(request: Request):
     batch_id = body.get("batchId")
     cases: List[Dict[str, Any]] = body.get("cases") or []
 
-    results = []
     seen_ids = set()
+    valid_cases = []
     for case in cases:
         case_id = case.get("caseId")
         if case_id is None or case_id in seen_ids:
-            # duplicate/unknown id would fail the batch anyway; skip defensively
             continue
         seen_ids.add(case_id)
-        try:
-            decision = classify_case(case)
-        except Exception:
-            # Never let one bad case 500 the whole batch; fall back to the
-            # safest deterministic default.
-            decision = {
-                "requestDecision": "review",
-                "toolDecision": "review" if case.get("proposedTool") else "none",
-                "route": "restricted",
-                "trajectory": "watch",
-            }
-        results.append({"caseId": case_id, **decision})
+        valid_cases.append(case)
+
+    decisions = await classify_batch_async(valid_cases)
+    results = [
+        {"caseId": case.get("caseId"), **decision}
+        for case, decision in zip(valid_cases, decisions)
+    ]
 
     response = {
         "profile": profile,
